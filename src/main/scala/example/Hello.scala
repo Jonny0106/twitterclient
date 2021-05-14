@@ -1,6 +1,9 @@
 package example
+import com.twitter.io
+import com.twitter.io.Buf
 import com.twitter.finagle.{Http, Service}
 import com.twitter.finagle.http
+import com.twitter.finagle.http.HeaderMap
 import com.twitter.util.{Await, Future}
 import com.twitter.finagle.builder
 import com.twitter.util.Future
@@ -10,7 +13,7 @@ object Hello extends App {
   println("Hello worlda")
 
   val twitterReader = new TwitterReader()
-  twitterReader.readRecent("from:twitter")
+  // twitterReader.readRecent("from:twitter")
 
   val filterContent = 
     """
@@ -44,7 +47,7 @@ class TwitterReader {
 
   def readRecent(filter: String) {
     val uri =  "/2/tweets/search/recent?query=" + filter
-    val res = TwitterClient.requestGet(uri)
+    val res = TwitterClient.requestGet(uri, false)
     res.setContentTypeJson()
     val jsonData = JSON.parseFull(res.contentString)
     val jsonMap = jsonData.get.asInstanceOf[Map[String,Any]]
@@ -63,7 +66,7 @@ class TwitterReader {
     println("got res" + res + "\n" + res.contentString)
     
     val streamUri = "/2/tweets/search/stream"
-    val streamResponse = TwitterClient.requestGet(streamUri)
+    val streamResponse = TwitterClient.requestGet(streamUri, true)
     println("reach here")
     println(streamResponse + "\n" + streamResponse.contentString)
   
@@ -79,12 +82,43 @@ object TwitterClient {
   
   private val bearer = "Bearer " + sys.env.get("TWITTER_BEARER").get
   
-  def requestGet(uri: String): http.Response = {
-    val client = clientFactory()
+  def requestGet(uri: String, isStream: Boolean): http.Response = {
+    
+    val client: Service[http.Request, http.Response] = 
+    isStream match {
+      case true  => 
+        Http.client
+        .withTransport.tls("api.twitter.com")
+        .withStreaming(true)
+        .newService("api.twitter.com:443")
+      case false => clientFactory()
+    }
+
     val request = http.Request(http.Method.Get, uri)
     request.headerMap.put("Authorization", bearer)
     val response = client(request)
-    val rep = Await.result(response)
+    val rep: http.Response = Await.result(response)
+    val r = rep.chunkReader
+    
+    def loop(acc: Buf, trailers: Option[HeaderMap]): Future[(Buf, Option[HeaderMap])] =
+      r.read().flatMap {
+        case Some(chunk) =>
+          if (chunk.isLast && !chunk.trailers.isEmpty)
+            loop(acc.concat(chunk.content), Some(chunk.trailers))
+          else {
+            val Buf.Utf8(str) = chunk.content
+            println(str)
+            loop(acc.concat(chunk.content), None)
+          }
+        case None =>
+          Future.value(acc -> trailers)
+      }
+
+    val a = loop(Buf.Empty, None)
+    val b = Await.result(a)
+    val Buf.Utf8(str) = b._1
+    println(str)
+    
     client.close()
     rep
   }
