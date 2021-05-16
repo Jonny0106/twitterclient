@@ -8,6 +8,8 @@ import com.twitter.util.{Await, Future}
 import com.twitter.finagle.builder
 import com.twitter.util.Future
 import scala.util.parsing.json.JSON
+import com.twitter.finagle
+import com.acred.twitterClient.TwitterClient
 
 object Hello extends App {
   println("Hello worlda")
@@ -15,6 +17,11 @@ object Hello extends App {
   val twitterReader = new TwitterReader()
   // twitterReader.readRecent("from:twitter")
 
+  def printWithHello(str: String): Boolean = {
+    println(str)
+    println("Hello")
+    str.contains("done")
+  } 
   val filterContent = 
     """
     |{
@@ -23,7 +30,7 @@ object Hello extends App {
     | ]
     |}
     """.stripMargin
-  twitterReader.streamTweets(filterContent)
+  twitterReader.streamTweets(filterContent, printWithHello)
   println("done")
 }
 
@@ -46,60 +53,26 @@ class TwitterReader {
   } 
 
   def readRecent(filter: String) {
+    val twitterClient = new TwitterClient(false)
     val uri =  "/2/tweets/search/recent?query=" + filter
-    val res = TwitterClient.requestGet(uri, false)
-    res.setContentTypeJson()
-    val jsonData = JSON.parseFull(res.contentString)
-    val jsonMap = jsonData.get.asInstanceOf[Map[String,Any]]
-    val tweetList = jsonMap.get("data") match {
-      case Some(listTweet) => listTweet.asInstanceOf[List[Map[String,String]]]
-      case None            => List(Map()).asInstanceOf[List[Map[String,String]]]
-    }
-  
+    val result = twitterClient.requestGet(uri, false)
+    jsonParser(result)
     tweetList.foreach(tweetMap => println(tweetMap.get("text").get))
+    twitterClient.close()
   }
 
-  def streamTweets(filter: String) {
+  def streamTweets(filter: String, procces: (String) => Boolean) {
+    val twitterClient = new TwitterClient(true)
     val postUri = "/2/tweets/search/stream/rules"
     val headerMap = Map("Content-Type" -> "application/json")
-    val res = TwitterClient.requestPost(postUri, headerMap, filter)
+    val res = twitterClient.requestPost(postUri, headerMap, filter)
     println("got res" + res + "\n" + res.contentString)
     
     val streamUri = "/2/tweets/search/stream"
-    val streamResponse = TwitterClient.requestGet(streamUri, true)
+    val streamResponse = twitterClient.requestGet(streamUri, true)
     println("reach here")
-    println(streamResponse + "\n" + streamResponse.contentString)
-  
-  }
-}
+    val r = streamResponse.chunkReader
 
-
-object TwitterClient {
-  private def clientFactory(): Service[http.Request, http.Response] = 
-    Http.client
-    .withTransport.tls("api.twitter.com")
-    .newService("api.twitter.com:443")
-  
-  private val bearer = "Bearer " + sys.env.get("TWITTER_BEARER").get
-  
-  def requestGet(uri: String, isStream: Boolean): http.Response = {
-    
-    val client: Service[http.Request, http.Response] = 
-    isStream match {
-      case true  => 
-        Http.client
-        .withTransport.tls("api.twitter.com")
-        .withStreaming(true)
-        .newService("api.twitter.com:443")
-      case false => clientFactory()
-    }
-
-    val request = http.Request(http.Method.Get, uri)
-    request.headerMap.put("Authorization", bearer)
-    val response = client(request)
-    val rep: http.Response = Await.result(response)
-    val r = rep.chunkReader
-    
     def loop(acc: Buf, trailers: Option[HeaderMap]): Future[(Buf, Option[HeaderMap])] =
       r.read().flatMap {
         case Some(chunk) =>
@@ -107,33 +80,32 @@ object TwitterClient {
             loop(acc.concat(chunk.content), Some(chunk.trailers))
           else {
             val Buf.Utf8(str) = chunk.content
-            println(str)
-            loop(acc.concat(chunk.content), None)
+            val isDone = procces(str)
+            if (!isDone){
+              println("not done")
+              loop(acc.concat(chunk.content), None)
+            }
+            else{
+              println("done")
+              Future.value(acc -> trailers)
+            }
           }
         case None =>
           Future.value(acc -> trailers)
       }
+    Await.result(loop(Buf.Empty, None))
 
-    val a = loop(Buf.Empty, None)
-    val b = Await.result(a)
-    val Buf.Utf8(str) = b._1
-    println(str)
-    
-    client.close()
-    rep
+    println("reach here end!!!")
+    twitterClient.close()
   }
 
-  def requestPost(uri: String, headerMap: Map[String,String], contentString: String): http.Response = {
-    val client = clientFactory()
-    val request = http.Request(http.Method.Post, uri)
-    headerMap.foreach(header => request.headerMap.put(header._1, header._2))
-    request.headerMap.put("Authorization", bearer)
-    request.contentString = contentString
-    request.setContentTypeJson()
-    val response = client(request)
-    val rep = Await.result(response)
-    client.close()
-    rep
+  private def jsonParser(result: String): List[Map[String,String]] = {
+    val jsonData = JSON.parseFull(result)
+    val jsonMap = jsonData.get.asInstanceOf[Map[String,Any]]
+    val tweetList = jsonMap.get("data") match {
+      case Some(listTweet) => listTweet.asInstanceOf[List[Map[String,String]]]
+      case None            => List(Map()).asInstanceOf[List[Map[String,String]]]
+    }
   }
-  
+
 }
