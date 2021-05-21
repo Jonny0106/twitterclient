@@ -50,6 +50,16 @@ class TwitterClient(isStream: Boolean) {
     rep
   }
 
+  def requestPostTweet(uri: String, headerMap: Map[String,String], content: String): http.Response = {
+    val request = http.Request(http.Method.Post, uri)
+    headerMap.foreach(header => request.headerMap.put(header._1, header._2))
+    request.contentString = "status=" + content
+    println(request.contentString)
+    val response = client(request)
+    val rep = Await.result(response)
+    rep
+  }
+
   def close(){
     client.close()
   }

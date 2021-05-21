@@ -15,7 +15,8 @@ lazy val root = (project in file("."))
     name := "TwitterClient",
     libraryDependencies ++= Seq(
       scalaTest % Test,
-      "com.twitter" %% "finagle-http" % "21.4.0"
+      "com.twitter" %% "finagle-http" % "21.4.0",
+      "commons-codec" % "commons-codec" % "1.9"
     )
   )
 
